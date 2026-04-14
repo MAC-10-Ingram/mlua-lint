@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlua-lint-python"
+version = "0.1.0"
+description = "JSON-first CLI wrapper for the msw.mlua language server"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "swjang" }]
+dependencies = []
+
+[project.scripts]
+mlua-linter = "mlua_lint.cli:main"
+mlua-lint = "mlua_lint.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
