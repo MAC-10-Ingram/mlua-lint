@@ -50,7 +50,7 @@ class LspClient:
         )
         self._diag_lock = threading.Lock()
         self._diagnostics: dict[str, list[dict[str, Any]]] = {}
-        self._refresh_event = threading.Event()
+        self._refresh_signal = threading.Semaphore(0)
         self._doc_versions: dict[str, int] = {}
         self._capabilities: dict[str, Any] = {}
         self._raw_capabilities: dict[str, Any] = {}
@@ -69,7 +69,7 @@ class LspClient:
 
     def _on_notification(self, method: str, params: Any) -> None:
         if method == "workspace/diagnostic/refresh":
-            self._refresh_event.set()
+            self._refresh_signal.release()
             return
         if method != "textDocument/publishDiagnostics":
             return
@@ -138,7 +138,7 @@ class LspClient:
             self.open_document(file_path, content)
 
     def wait_for_refresh(self, timeout: float) -> bool:
-        return self._refresh_event.wait(timeout=timeout)
+        return self._refresh_signal.acquire(timeout=timeout)
 
     def call_raw(self, method: str, params: dict[str, Any]) -> Any:
         return self._transport.call(method, params, timeout=20.0)
@@ -275,16 +275,24 @@ class LspClient:
     def _pull_diagnostics(self, doc_uri: str) -> dict[str, Any]:
         params = {"textDocument": {"uri": doc_uri}}
         result = self.call_raw("textDocument/diagnostic", params) or {}
-        kind = result.get("kind")
-        if kind != "full":
-            deadline = time.time() + 2.0
-            while time.time() < deadline:
-                if self.wait_for_refresh(0.5):
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            kind = result.get("kind")
+            items = result.get("items", [])
+            if kind == "full" and isinstance(items, list) and items:
+                break
+
+            # Some servers report "unchanged" before background analysis finishes.
+            # Others emit an early empty "full" and then fill diagnostics shortly after.
+            if kind != "full":
+                if self.wait_for_refresh(0.4):
                     result = self.call_raw("textDocument/diagnostic", params) or {}
-                    if result.get("kind") == "full":
-                        break
-                else:
-                    time.sleep(0.1)
+                    continue
+                time.sleep(0.1)
+            else:
+                time.sleep(0.2)
+
+            result = self.call_raw("textDocument/diagnostic", params) or {}
         items = result.get("items", [])
         if not isinstance(items, list):
             return {"uri": doc_uri, "diagnostics": []}

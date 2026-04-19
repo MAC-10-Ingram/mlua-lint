@@ -40,6 +40,10 @@ def notify(method: str, params: Any) -> None:
 
 
 def main() -> int:
+    refresh_request_id = 1000
+    pending_refresh_ids: set[int] = set()
+    refresh_acknowledged = False
+
     while True:
         msg = read_message()
         if msg is None:
@@ -47,6 +51,13 @@ def main() -> int:
         method = msg.get("method")
         msg_id = msg.get("id")
         params = msg.get("params", {})
+
+        # Response to a server-originated request.
+        if msg_id is not None and method is None:
+            if isinstance(msg_id, int) and msg_id in pending_refresh_ids:
+                pending_refresh_ids.remove(msg_id)
+                refresh_acknowledged = True
+            continue
 
         if msg_id is None:
             continue
@@ -179,7 +190,30 @@ def main() -> int:
 
         if method == "textDocument/diagnostic":
             uri = params.get("textDocument", {}).get("uri", "file:///tmp/test.mlua")
-            notify("workspace/diagnostic/refresh", {})
+            if not refresh_acknowledged and not pending_refresh_ids:
+                refresh_request_id += 1
+                pending_refresh_ids.add(refresh_request_id)
+                write_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": refresh_request_id,
+                        "method": "workspace/diagnostic/refresh",
+                        "params": {},
+                    }
+                )
+                write_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": msg_id,
+                        "result": {
+                            "kind": "unchanged",
+                            "items": [],
+                            "resultId": "refresh-pending",
+                            "uri": uri,
+                        },
+                    }
+                )
+                continue
             write_message(
                 {
                     "jsonrpc": "2.0",

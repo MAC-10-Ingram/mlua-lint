@@ -82,6 +82,14 @@ class JsonRpcTransport:
                 self._closed.set()
                 self._fail_pending("language server closed unexpectedly")
                 return
+            method = message.get("method")
+            if isinstance(method, str):
+                if self._on_notification:
+                    self._on_notification(method, message.get("params"))
+                # Handle server->client requests by replying with an empty result object.
+                if "id" in message:
+                    self._write({"jsonrpc": "2.0", "id": message["id"], "result": {}})
+                continue
             if "id" in message:
                 request_id = message["id"]
                 if isinstance(request_id, int):
@@ -89,8 +97,6 @@ class JsonRpcTransport:
                         pending = self._pending.pop(request_id, None)
                     if pending:
                         pending.put(message)
-            elif "method" in message and self._on_notification:
-                self._on_notification(str(message["method"]), message.get("params"))
 
     def _read_message(self) -> dict[str, Any] | None:
         if not self._proc.stdout:
