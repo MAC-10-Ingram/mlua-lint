@@ -1,6 +1,6 @@
 # mlua-lint-python
-
-Python port of the `mlua-lint-go` CLI wrapper around the official `msw.mlua` language server.
+CLI wrapper around the official `msw.mlua` language server.
+diagnostic only
 
 ## Install
 
