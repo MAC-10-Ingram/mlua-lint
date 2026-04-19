@@ -35,7 +35,16 @@ class LspClientIntegrationTests(unittest.TestCase):
 
                 diagnostics = client.diagnostics([str(sample)], initial_wait_seconds=0.1)
                 self.assertEqual(diagnostics["warningCount"], 1)
-                self.assertEqual(diagnostics["errorCount"], 0)
+                self.assertEqual(diagnostics["errorCount"], 1)
+                self.assertEqual(diagnostics["infoCount"], 1)
+
+                warning_only = client.diagnostics([str(sample)], initial_wait_seconds=0.1, severities={"warning"})
+                self.assertEqual(warning_only["warningCount"], 1)
+                self.assertEqual(warning_only["errorCount"], 0)
+                self.assertEqual(warning_only["infoCount"], 0)
+                first_report = warning_only["files"][0]
+                self.assertEqual(len(first_report["diagnostics"]), 1)
+                self.assertEqual(first_report["diagnostics"][0]["severity"], "warning")
 
                 completion = client.completion(str(sample), 1, 1)
                 self.assertEqual(completion["items"][0]["label"], "foo")

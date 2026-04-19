@@ -44,6 +44,24 @@ def parse_bool_arg(value: str) -> bool:
     raise ValidationError(f"invalid boolean value {value!r}")
 
 
+def parse_diagnostic_severities(values: list[str] | None) -> set[str] | None:
+    if not values:
+        return None
+    allowed = {"error", "warning", "information"}
+    parsed: set[str] = set()
+    for raw in values:
+        for part in str(raw).split(","):
+            severity = part.strip().lower()
+            if not severity:
+                continue
+            if severity not in allowed:
+                raise ValidationError(
+                    f"invalid severity {severity!r}; allowed values: warning, error, information"
+                )
+            parsed.add(severity)
+    return parsed or None
+
+
 def resolve_root(root: str | None) -> str:
     if not root or not root.strip():
         return str(Path.cwd())
@@ -292,6 +310,12 @@ def build_parser() -> argparse.ArgumentParser:
     diagnostic = subparsers.add_parser("diagnostic", help="Collect diagnostics for one or more files.")
     add_common(diagnostic)
     diagnostic.add_argument("files", nargs="+")
+    diagnostic.add_argument(
+        "--severity",
+        action="append",
+        default=[],
+        help="Filter diagnostics by severity (warning|error|information). Repeatable or comma-separated.",
+    )
 
     annotation = subparsers.add_parser("annotation", aliases=["annotations"], help="Return semantic annotation tokens.")
     add_file(annotation)
@@ -343,6 +367,7 @@ def run(args: argparse.Namespace) -> int:
             fmt = validate_format(args.format)
             if not args.files:
                 raise ValidationError("at least one file is required")
+            severities = parse_diagnostic_severities(args.severity)
         except Exception as err:
             return emit_validation_failure("diagnostic", "", None, err, args.format or "json")
 
@@ -360,7 +385,7 @@ def run(args: argparse.Namespace) -> int:
 
         try:
             capability = client.capability("diagnostic")
-            result = client.diagnostics(files, float(args.timeout))
+            result = client.diagnostics(files, float(args.timeout), severities)
             print_envelope(
                 fmt,
                 {

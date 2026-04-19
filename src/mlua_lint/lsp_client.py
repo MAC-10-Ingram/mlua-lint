@@ -143,7 +143,12 @@ class LspClient:
     def call_raw(self, method: str, params: dict[str, Any]) -> Any:
         return self._transport.call(method, params, timeout=20.0)
 
-    def diagnostics(self, file_paths: list[str], initial_wait_seconds: float) -> dict[str, Any]:
+    def diagnostics(
+        self,
+        file_paths: list[str],
+        initial_wait_seconds: float,
+        severities: set[str] | None = None,
+    ) -> dict[str, Any]:
         self.wait_for_refresh(initial_wait_seconds)
         files: list[dict[str, Any]] = []
         error_count = 0
@@ -151,6 +156,17 @@ class LspClient:
         info_count = 0
         for path in file_paths:
             report = self._pull_diagnostics(Path(path).resolve().as_uri())
+            if severities is not None:
+                diagnostics = report.get("diagnostics", [])
+                if isinstance(diagnostics, list):
+                    report = {
+                        "uri": report.get("uri", ""),
+                        "diagnostics": [
+                            item
+                            for item in diagnostics
+                            if isinstance(item, dict) and str(item.get("severity", "")) in severities
+                        ],
+                    }
             files.append(report)
             for diagnostic in report.get("diagnostics", []):
                 severity = diagnostic.get("severity", "")

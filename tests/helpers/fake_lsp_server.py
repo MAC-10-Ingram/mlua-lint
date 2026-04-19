@@ -222,12 +222,26 @@ def main() -> int:
                         "kind": "full",
                         "items": [
                             {
+                                "severity": 1,
+                                "source": "fake",
+                                "message": "sample error",
+                                "range": {"start": {"line": 0, "character": 5}, "end": {"line": 0, "character": 9}},
+                                "code": "E001",
+                            },
+                            {
                                 "severity": 2,
                                 "source": "fake",
                                 "message": "sample warning",
                                 "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 4}},
                                 "code": "W001",
-                            }
+                            },
+                            {
+                                "severity": 3,
+                                "source": "fake",
+                                "message": "sample information",
+                                "range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 4}},
+                                "code": "I001",
+                            },
                         ],
                         "uri": uri,
                     },
