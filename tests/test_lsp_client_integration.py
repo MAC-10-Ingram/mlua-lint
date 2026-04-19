@@ -30,9 +30,6 @@ class LspClientIntegrationTests(unittest.TestCase):
                 client.initialize(str(tmp_path), [])
                 client.ensure_document(str(sample), sample.read_text(encoding="utf-8"))
 
-                hover = client.hover(str(sample), 1, 1)
-                self.assertEqual(hover["contents"][0]["value"], "fake hover")
-
                 diagnostics = client.diagnostics([str(sample)], initial_wait_seconds=0.1)
                 self.assertEqual(diagnostics["warningCount"], 1)
                 self.assertEqual(diagnostics["errorCount"], 1)
@@ -45,9 +42,6 @@ class LspClientIntegrationTests(unittest.TestCase):
                 first_report = warning_only["files"][0]
                 self.assertEqual(len(first_report["diagnostics"]), 1)
                 self.assertEqual(first_report["diagnostics"][0]["severity"], "warning")
-
-                completion = client.completion(str(sample), 1, 1)
-                self.assertEqual(completion["items"][0]["label"], "foo")
             finally:
                 client.close()
 

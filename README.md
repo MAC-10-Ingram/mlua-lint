@@ -11,8 +11,8 @@ python -m pip install -e .
 ## Usage
 
 ```bash
-mlua-linter diagnostic path/to/script.mlua
-mlua-linter hover --file path/to/script.mlua --position 10:4
+mlua-linter path/to/script.mlua
+mlua-linter path/to/a.mlua path/to/b.mlua --severity warning,error
 ```
 
 Default output format is JSON envelope:
@@ -20,10 +20,13 @@ Default output format is JSON envelope:
 ```json
 {
   "ok": true,
-  "command": "hover",
-  "file": "/abs/path/script.mlua",
-  "position": { "line": 10, "character": 4 },
-  "result": {},
-  "serverCapability": { "supported": true, "method": "textDocument/hover" }
+  "command": "diagnostic",
+  "result": {
+    "files": [],
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0
+  },
+  "serverCapability": { "supported": true, "method": "textDocument/diagnostic" }
 }
 ```

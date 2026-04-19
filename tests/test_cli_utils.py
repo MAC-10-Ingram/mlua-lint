@@ -1,17 +1,11 @@
+import io
+import json
 import unittest
+from argparse import Namespace
+from contextlib import redirect_stdout
 
-from mlua_lint.cli import parse_diagnostic_severities, parse_position
+from mlua_lint.cli import parse_diagnostic_severities, run
 from mlua_lint.errors import ValidationError
-
-
-class ParsePositionTests(unittest.TestCase):
-    def test_parse_position(self) -> None:
-        self.assertEqual(parse_position("12:34"), {"line": 12, "character": 34})
-
-    def test_parse_position_rejects_invalid_input(self) -> None:
-        for value in ("", "12", "a:1", "1:b", "-1:2", "1:-3"):
-            with self.assertRaises(ValidationError):
-                parse_position(value)
 
 
 class ParseDiagnosticSeveritiesTests(unittest.TestCase):
@@ -25,6 +19,27 @@ class ParseDiagnosticSeveritiesTests(unittest.TestCase):
     def test_reject_invalid_values(self) -> None:
         with self.assertRaises(ValidationError):
             parse_diagnostic_severities(["hint"])
+
+
+class CliCommandShapeTests(unittest.TestCase):
+    def test_diagnostic_subcommand_is_rejected(self) -> None:
+        args = Namespace(
+            files=["diagnostic", "sample.mlua"],
+            ls_path="",
+            root="",
+            format="json",
+            timeout=5,
+            severity=[],
+        )
+
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            exit_code = run(args)
+
+        self.assertEqual(exit_code, 1)
+        envelope = json.loads(stdout.getvalue())
+        self.assertEqual(envelope["error"]["code"], "invalid_argument")
+        self.assertIn("removed", envelope["error"]["message"])
 
 
 if __name__ == "__main__":

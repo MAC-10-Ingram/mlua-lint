@@ -8,19 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from mlua_lint.errors import JsonRpcError
-from mlua_lint.normalize import (
-    extract_semantic_legend,
-    normalize_annotation_result,
-    normalize_completion_result,
-    normalize_diagnostic,
-    normalize_highlight_result,
-    normalize_hover_result,
-    normalize_inlay_hint_result,
-    normalize_location_result,
-    normalize_rename_result,
-    normalize_signature_help_result,
-)
+from mlua_lint.normalize import normalize_diagnostic
 from mlua_lint.transport import JsonRpcTransport
 
 
@@ -30,14 +18,6 @@ def resolve_server_command(ls_path: str) -> list[str]:
     if ext in {".js", ".mjs", ".cjs"}:
         return [node_path, ls_path, "--stdio"]
     return [ls_path, "--stdio"]
-
-
-def provider_enabled(provider: Any) -> bool:
-    if provider is None:
-        return False
-    if isinstance(provider, bool):
-        return provider
-    return True
 
 
 class LspClient:
@@ -52,8 +32,6 @@ class LspClient:
         self._diagnostics: dict[str, list[dict[str, Any]]] = {}
         self._refresh_signal = threading.Semaphore(0)
         self._doc_versions: dict[str, int] = {}
-        self._capabilities: dict[str, Any] = {}
-        self._raw_capabilities: dict[str, Any] = {}
         self._transport = JsonRpcTransport(self._process, self._on_notification)
         self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
         self._stderr_thread.start()
@@ -99,11 +77,7 @@ class LspClient:
             "capabilities": _client_capabilities(),
             "initializationOptions": json.dumps(init_options),
         }
-        result = self._transport.call("initialize", params, timeout=20.0) or {}
-        capabilities = result.get("capabilities", {}) if isinstance(result, dict) else {}
-        if isinstance(capabilities, dict):
-            self._raw_capabilities = capabilities
-            self._capabilities = capabilities
+        self._transport.call("initialize", params, timeout=20.0)
         self._transport.notify("initialized", {})
 
     def close(self) -> None:
@@ -183,110 +157,10 @@ class LspClient:
             "infoCount": info_count,
         }
 
-    def hover(self, file_path: str, line: int, character: int) -> dict[str, Any]:
-        return normalize_hover_result(self.call_raw("textDocument/hover", self._position_params(file_path, line, character)))
-
-    def completion(self, file_path: str, line: int, character: int) -> dict[str, Any]:
-        params = self._position_params(file_path, line, character)
-        params["context"] = {"triggerKind": 1}
-        return normalize_completion_result(self.call_raw("textDocument/completion", params))
-
-    def document_highlight(self, file_path: str, line: int, character: int) -> list[dict[str, Any]]:
-        return normalize_highlight_result(
-            self.call_raw("textDocument/documentHighlight", self._position_params(file_path, line, character))
-        )
-
-    def definition(self, file_path: str, line: int, character: int) -> list[dict[str, Any]]:
-        return normalize_location_result(self.call_raw("textDocument/definition", self._position_params(file_path, line, character)))
-
-    def type_definition(self, file_path: str, line: int, character: int) -> list[dict[str, Any]]:
-        return normalize_location_result(
-            self.call_raw("textDocument/typeDefinition", self._position_params(file_path, line, character))
-        )
-
-    def references(self, file_path: str, line: int, character: int, include_declaration: bool) -> list[dict[str, Any]]:
-        params = self._position_params(file_path, line, character)
-        params["context"] = {"includeDeclaration": include_declaration}
-        return normalize_location_result(self.call_raw("textDocument/references", params))
-
-    def rename(self, file_path: str, line: int, character: int, new_name: str) -> dict[str, Any]:
-        params = self._position_params(file_path, line, character)
-        params["newName"] = new_name
-        return normalize_rename_result(self.call_raw("textDocument/rename", params))
-
-    def signature_help(self, file_path: str, line: int, character: int) -> dict[str, Any]:
-        params = self._position_params(file_path, line, character)
-        params["context"] = {"triggerKind": 1, "isRetrigger": False}
-        return normalize_signature_help_result(self.call_raw("textDocument/signatureHelp", params))
-
-    def inlay_hint(self, file_path: str, content: str) -> list[dict[str, Any]]:
-        params = {"textDocument": {"uri": Path(file_path).resolve().as_uri()}, "range": _document_range(content)}
-        return normalize_inlay_hint_result(self.call_raw("textDocument/inlayHint", params))
-
-    def annotation(self, file_path: str, content: str) -> dict[str, Any]:
-        params = {"textDocument": {"uri": Path(file_path).resolve().as_uri()}}
-        try:
-            raw = self.call_raw("textDocument/semanticTokens/full", params)
-        except JsonRpcError as err:
-            if err.code != -32601 or not _has_semantic_token_range_support(self._raw_capabilities):
-                raise
-            raw = self.call_raw(
-                "textDocument/semanticTokens/range",
-                {"textDocument": {"uri": Path(file_path).resolve().as_uri()}, "range": _document_range(content)},
-            )
-        legend = extract_semantic_legend(self._raw_capabilities)
-        return normalize_annotation_result(raw, legend)
-
     def capability(self, feature: str) -> dict[str, Any]:
-        if feature == "annotation":
-            if _has_semantic_token_support(self._raw_capabilities):
-                return {"supported": True, "method": "textDocument/semanticTokens/full"}
-            return {
-                "supported": False,
-                "method": "textDocument/semanticTokens/full",
-                "detail": "semanticTokensProvider missing",
-            }
-        if feature == "completion":
-            return _provider_status(self._capabilities.get("completionProvider"), "textDocument/completion", "completionProvider missing")
-        if feature == "definition":
-            return _provider_status(self._capabilities.get("definitionProvider"), "textDocument/definition", "definitionProvider missing")
         if feature == "diagnostic":
             return {"supported": True, "method": "textDocument/diagnostic"}
-        if feature == "highlight":
-            return _provider_status(
-                self._capabilities.get("documentHighlightProvider"),
-                "textDocument/documentHighlight",
-                "documentHighlightProvider missing",
-            )
-        if feature == "hover":
-            return _provider_status(self._capabilities.get("hoverProvider"), "textDocument/hover", "hoverProvider missing")
-        if feature == "inlay-hint":
-            if provider_enabled(self._raw_capabilities.get("inlayHintProvider")):
-                return {"supported": True, "method": "textDocument/inlayHint"}
-            return {"supported": False, "method": "textDocument/inlayHint", "detail": "inlayHintProvider missing"}
-        if feature in {"reference", "references"}:
-            return _provider_status(self._capabilities.get("referencesProvider"), "textDocument/references", "referencesProvider missing")
-        if feature == "rename":
-            return _provider_status(self._capabilities.get("renameProvider"), "textDocument/rename", "renameProvider missing")
-        if feature == "signature-help":
-            return _provider_status(
-                self._capabilities.get("signatureHelpProvider"),
-                "textDocument/signatureHelp",
-                "signatureHelpProvider missing",
-            )
-        if feature == "type-definition":
-            return _provider_status(
-                self._capabilities.get("typeDefinitionProvider"),
-                "textDocument/typeDefinition",
-                "typeDefinitionProvider missing",
-            )
         return {"supported": False, "method": feature, "detail": "unknown feature"}
-
-    def _position_params(self, file_path: str, line: int, character: int) -> dict[str, Any]:
-        return {
-            "textDocument": {"uri": Path(file_path).resolve().as_uri()},
-            "position": {"line": line, "character": character},
-        }
 
     def _pull_diagnostics(self, doc_uri: str) -> dict[str, Any]:
         params = {"textDocument": {"uri": doc_uri}}
@@ -316,96 +190,12 @@ class LspClient:
         return {"uri": doc_uri, "diagnostics": diagnostics}
 
 
-def _provider_status(provider: Any, method: str, missing_detail: str) -> dict[str, Any]:
-    if provider_enabled(provider):
-        return {"supported": True, "method": method}
-    return {"supported": False, "method": method, "detail": missing_detail}
-
-
-def _has_semantic_token_support(raw: dict[str, Any]) -> bool:
-    return provider_enabled(raw.get("semanticTokensProvider"))
-
-
-def _has_semantic_token_range_support(raw: dict[str, Any]) -> bool:
-    provider = raw.get("semanticTokensProvider")
-    if not isinstance(provider, dict):
-        return False
-    return provider_enabled(provider.get("range"))
-
-
-def _document_range(content: str) -> dict[str, Any]:
-    lines = content.split("\n")
-    end_line = max(len(lines) - 1, 0)
-    end_character = len(lines[end_line]) if lines else 0
-    return {"start": {"line": 0, "character": 0}, "end": {"line": end_line, "character": end_character}}
-
-
 def _client_capabilities() -> dict[str, Any]:
     return {
         "textDocument": {
             "publishDiagnostics": {"relatedInformation": True},
-            "completion": {
-                "contextSupport": True,
-                "completionItem": {"documentationFormat": ["markdown", "plaintext"], "snippetSupport": True},
-            },
-            "hover": {"contentFormat": ["markdown", "plaintext"]},
-            "signatureHelp": {
-                "contextSupport": True,
-                "signatureInformation": {
-                    "documentationFormat": ["markdown", "plaintext"],
-                    "parameterInformation": {"labelOffsetSupport": True},
-                    "activeParameterSupport": True,
-                },
-            },
-            "definition": {"linkSupport": True},
-            "typeDefinition": {"linkSupport": True},
-            "references": {},
-            "documentHighlight": {},
-            "rename": {"prepareSupport": True, "prepareSupportDefaultBehavior": 1},
-            "semanticTokens": {
-                "requests": {"range": True, "full": True},
-                "tokenTypes": [
-                    "namespace",
-                    "type",
-                    "class",
-                    "enum",
-                    "interface",
-                    "struct",
-                    "typeParameter",
-                    "parameter",
-                    "variable",
-                    "property",
-                    "enumMember",
-                    "event",
-                    "function",
-                    "method",
-                    "macro",
-                    "keyword",
-                    "modifier",
-                    "comment",
-                    "string",
-                    "number",
-                    "regexp",
-                    "operator",
-                ],
-                "tokenModifiers": [
-                    "declaration",
-                    "definition",
-                    "readonly",
-                    "static",
-                    "deprecated",
-                    "abstract",
-                    "async",
-                    "modification",
-                    "documentation",
-                    "defaultLibrary",
-                ],
-                "formats": ["relative"],
-                "overlappingTokenSupport": True,
-                "multilineTokenSupport": True,
-            },
         },
-        "workspace": {"workspaceEdit": {"documentChanges": True}},
+        "workspace": {},
     }
 
 

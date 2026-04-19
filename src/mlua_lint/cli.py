@@ -4,28 +4,11 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from mlua_lint.errors import JsonRpcError, ValidationError
 from mlua_lint.finder import find_language_server
 from mlua_lint.lsp_client import LspClient
-
-
-def parse_position(value: str) -> dict[str, int]:
-    raw = value.strip()
-    if not raw:
-        raise ValidationError("--position is required")
-    parts = raw.split(":")
-    if len(parts) != 2:
-        raise ValidationError("position must be in 0-based line:character form")
-    try:
-        line = int(parts[0].strip())
-        char = int(parts[1].strip())
-    except ValueError as exc:
-        raise ValidationError(f"invalid position value: {value}") from exc
-    if line < 0 or char < 0:
-        raise ValidationError("position values must be >= 0")
-    return {"line": line, "character": char}
 
 
 def validate_format(fmt: str) -> str:
@@ -33,15 +16,6 @@ def validate_format(fmt: str) -> str:
     if normalized in {"", "json", "text"}:
         return normalized or "json"
     raise ValidationError(f"unsupported format {fmt!r}")
-
-
-def parse_bool_arg(value: str) -> bool:
-    lowered = value.strip().lower()
-    if lowered in {"1", "true", "yes", "on"}:
-        return True
-    if lowered in {"0", "false", "no", "off"}:
-        return False
-    raise ValidationError(f"invalid boolean value {value!r}")
 
 
 def parse_diagnostic_severities(values: list[str] | None) -> set[str] | None:
@@ -90,21 +64,19 @@ def collect_document_items(project_root: str) -> list[dict[str, Any]]:
     return items
 
 
-def prepare_client(opts: argparse.Namespace, files: list[str]) -> tuple[LspClient, list[str], dict[str, str]]:
+def prepare_client(opts: argparse.Namespace, files: list[str]) -> tuple[LspClient, list[str]]:
     project_root = resolve_root(opts.root)
     ls_path = find_language_server(opts.ls_path or os.getenv("MLUA_LS_PATH"))
     client = LspClient(ls_path)
     try:
         client.initialize(project_root, collect_document_items(project_root))
         resolved_files: list[str] = []
-        contents: dict[str, str] = {}
         for file_path in files:
             resolved = resolve_file(project_root, file_path)
             content = Path(resolved).read_text(encoding="utf-8")
             client.ensure_document(resolved, content)
             resolved_files.append(resolved)
-            contents[resolved] = content
-        return client, resolved_files, contents
+        return client, resolved_files
     except Exception:
         client.close()
         raise
@@ -173,36 +145,25 @@ def normalize_runtime_error(err: Exception, capability: dict[str, Any]) -> dict[
     return {"code": "runtime_error", "message": str(err)}
 
 
-def emit_validation_failure(command: str, file_path: str, pos: dict[str, int] | None, err: Exception, fmt: str) -> int:
+def emit_validation_failure(err: Exception, fmt: str) -> int:
     print_envelope(
         fmt,
         {
             "ok": False,
-            "command": command,
-            "file": file_path,
-            "position": pos,
-            "serverCapability": {"method": command},
+            "command": "diagnostic",
+            "serverCapability": {"method": "textDocument/diagnostic"},
             "error": {"code": "invalid_argument", "message": str(err)},
         },
     )
     return 1
 
 
-def emit_runtime_failure(
-    command: str,
-    file_path: str,
-    pos: dict[str, int] | None,
-    capability: dict[str, Any],
-    err: Exception,
-    fmt: str,
-) -> int:
+def emit_runtime_failure(capability: dict[str, Any], err: Exception, fmt: str) -> int:
     print_envelope(
         fmt,
         {
             "ok": False,
-            "command": command,
-            "file": file_path,
-            "position": pos,
+            "command": "diagnostic",
             "serverCapability": capability,
             "error": normalize_runtime_error(err, capability),
         },
@@ -210,253 +171,55 @@ def emit_runtime_failure(
     return 1
 
 
-def run_file_command(
-    command_name: str,
-    args: argparse.Namespace,
-    invoke: Callable[[LspClient, str, str], Any],
-) -> int:
-    try:
-        fmt = validate_format(args.format)
-        if not args.file or not str(args.file).strip():
-            raise ValidationError("--file is required")
-    except Exception as err:
-        return emit_validation_failure(command_name, str(args.file or ""), None, err, args.format or "json")
-
-    try:
-        client, files, contents = prepare_client(args, [args.file])
-    except Exception as err:
-        return emit_runtime_failure(command_name, str(args.file or ""), None, {"method": command_name}, err, fmt)
-
-    try:
-        file_path = files[0]
-        capability = client.capability(command_name)
-        result = invoke(client, file_path, contents[file_path])
-        print_envelope(
-            fmt,
-            {
-                "ok": True,
-                "command": command_name,
-                "file": file_path,
-                "result": result,
-                "serverCapability": capability,
-            },
-        )
-        return 0
-    except Exception as err:
-        return emit_runtime_failure(command_name, files[0], None, capability, err, fmt)
-    finally:
-        client.close()
-
-
-def run_position_command(
-    command_name: str,
-    feature: str,
-    args: argparse.Namespace,
-    invoke: Callable[[LspClient, str, str, dict[str, int]], Any],
-) -> int:
-    try:
-        fmt = validate_format(args.format)
-        if not args.file or not str(args.file).strip():
-            raise ValidationError("--file is required")
-        pos = parse_position(args.position or "")
-    except Exception as err:
-        return emit_validation_failure(command_name, str(args.file or ""), None, err, args.format or "json")
-
-    try:
-        client, files, contents = prepare_client(args, [args.file])
-    except Exception as err:
-        return emit_runtime_failure(command_name, str(args.file or ""), pos, {"method": feature}, err, fmt)
-
-    try:
-        file_path = files[0]
-        capability = client.capability(feature)
-        result = invoke(client, file_path, contents[file_path], pos)
-        print_envelope(
-            fmt,
-            {
-                "ok": True,
-                "command": command_name,
-                "file": file_path,
-                "position": pos,
-                "result": result,
-                "serverCapability": capability,
-            },
-        )
-        return 0
-    except Exception as err:
-        return emit_runtime_failure(command_name, files[0], pos, capability, err, fmt)
-    finally:
-        client.close()
-
-
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mlua-linter", description="AI-agent-oriented mLua language tooling CLI.")
-    subparsers = parser.add_subparsers(dest="command")
-
-    def add_common(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--ls-path", default="", dest="ls_path", help="Path to the msw.mlua language server")
-        p.add_argument("--root", default="", help="Workspace root (defaults to current directory)")
-        p.add_argument("--format", default="json", help="Output format (json|text)")
-        p.add_argument("--timeout", type=int, default=5, help="Timeout in seconds to wait for analysis")
-
-    def add_file(p: argparse.ArgumentParser) -> None:
-        add_common(p)
-        p.add_argument("--file", default="", help="Target file path")
-
-    def add_position(p: argparse.ArgumentParser) -> None:
-        add_file(p)
-        p.add_argument("--position", default="", help="0-based line:character position")
-
-    diagnostic = subparsers.add_parser("diagnostic", help="Collect diagnostics for one or more files.")
-    add_common(diagnostic)
-    diagnostic.add_argument("files", nargs="+")
-    diagnostic.add_argument(
+    parser = argparse.ArgumentParser(prog="mlua-linter", description="mLua diagnostic CLI.")
+    parser.add_argument("files", nargs="+", help="Target .mlua files")
+    parser.add_argument("--ls-path", default="", dest="ls_path", help="Path to the msw.mlua language server")
+    parser.add_argument("--root", default="", help="Workspace root (defaults to current directory)")
+    parser.add_argument("--format", default="json", help="Output format (json|text)")
+    parser.add_argument("--timeout", type=int, default=5, help="Timeout in seconds to wait for analysis")
+    parser.add_argument(
         "--severity",
         action="append",
         default=[],
         help="Filter diagnostics by severity (warning|error|information). Repeatable or comma-separated.",
     )
-
-    annotation = subparsers.add_parser("annotation", aliases=["annotations"], help="Return semantic annotation tokens.")
-    add_file(annotation)
-
-    highlight = subparsers.add_parser("highlight", aliases=["highlighting"], help="Return highlights at a position.")
-    add_position(highlight)
-
-    completion = subparsers.add_parser("completion", help="Return completion items at a position.")
-    add_position(completion)
-
-    hover = subparsers.add_parser("hover", help="Return hover information at a position.")
-    add_position(hover)
-
-    inlay = subparsers.add_parser("inlay-hint", help="Return inlay hints for a file.")
-    add_file(inlay)
-
-    definition = subparsers.add_parser("definition", help="Go to definition at a position.")
-    add_position(definition)
-
-    type_definition = subparsers.add_parser("type-definition", help="Go to type definition at a position.")
-    add_position(type_definition)
-
-    reference = subparsers.add_parser("reference", help="Return the first reference at a position.")
-    add_position(reference)
-    reference.add_argument("--include-declaration", nargs="?", const=True, default=True, type=parse_bool_arg)
-
-    references = subparsers.add_parser("references", help="Return all references at a position.")
-    add_position(references)
-    references.add_argument("--include-declaration", nargs="?", const=True, default=True, type=parse_bool_arg)
-
-    rename = subparsers.add_parser("rename", help="Preview workspace edits for rename.")
-    add_position(rename)
-    rename.add_argument("--new-name", "--name", dest="new_name", default="", help="Replacement symbol name")
-
-    signature = subparsers.add_parser("signature-help", aliases=["signature-helper"], help="Return signature help.")
-    add_position(signature)
-
     return parser
 
 
 def run(args: argparse.Namespace) -> int:
-    command = args.command
-    if command is None:
-        build_parser().print_help()
-        return 0
+    try:
+        fmt = validate_format(args.format)
+        if not args.files:
+            raise ValidationError("at least one file is required")
+        if args.files and args.files[0] == "diagnostic":
+            raise ValidationError("diagnostic subcommand has been removed; pass files directly")
+        severities = parse_diagnostic_severities(args.severity)
+    except Exception as err:
+        return emit_validation_failure(err, args.format or "json")
 
-    if command == "diagnostic":
-        try:
-            fmt = validate_format(args.format)
-            if not args.files:
-                raise ValidationError("at least one file is required")
-            severities = parse_diagnostic_severities(args.severity)
-        except Exception as err:
-            return emit_validation_failure("diagnostic", "", None, err, args.format or "json")
+    try:
+        client, files = prepare_client(args, list(args.files))
+    except Exception as err:
+        return emit_runtime_failure({"supported": True, "method": "textDocument/diagnostic"}, err, fmt)
 
-        try:
-            client, files, _ = prepare_client(args, list(args.files))
-        except Exception as err:
-            return emit_runtime_failure(
-                "diagnostic",
-                "",
-                None,
-                {"supported": True, "method": "textDocument/diagnostic"},
-                err,
-                fmt,
-            )
-
-        try:
-            capability = client.capability("diagnostic")
-            result = client.diagnostics(files, float(args.timeout), severities)
-            print_envelope(
-                fmt,
-                {
-                    "ok": True,
-                    "command": "diagnostic",
-                    "result": result,
-                    "serverCapability": capability,
-                },
-            )
-            return 1 if int(result.get("errorCount", 0)) > 0 else 0
-        except Exception as err:
-            return emit_runtime_failure("diagnostic", "", None, capability, err, fmt)
-        finally:
-            client.close()
-
-    if command in {"annotation", "annotations"}:
-        return run_file_command("annotation", args, lambda c, f, t: c.annotation(f, t))
-    if command in {"completion"}:
-        return run_position_command("completion", "completion", args, lambda c, f, t, p: c.completion(f, p["line"], p["character"]))
-    if command in {"definition"}:
-        return run_position_command("definition", "definition", args, lambda c, f, t, p: c.definition(f, p["line"], p["character"]))
-    if command in {"highlight", "highlighting"}:
-        return run_position_command(
-            "highlight",
-            "highlight",
-            args,
-            lambda c, f, t, p: c.document_highlight(f, p["line"], p["character"]),
+    try:
+        capability = client.capability("diagnostic")
+        result = client.diagnostics(files, float(args.timeout), severities)
+        print_envelope(
+            fmt,
+            {
+                "ok": True,
+                "command": "diagnostic",
+                "result": result,
+                "serverCapability": capability,
+            },
         )
-    if command in {"hover"}:
-        return run_position_command("hover", "hover", args, lambda c, f, t, p: c.hover(f, p["line"], p["character"]))
-    if command in {"inlay-hint"}:
-        return run_file_command("inlay-hint", args, lambda c, f, t: c.inlay_hint(f, t))
-    if command in {"reference"}:
-        return run_position_command(
-            "reference",
-            "reference",
-            args,
-            lambda c, f, t, p: {"location": (refs := c.references(f, p["line"], p["character"], args.include_declaration))[0] if refs else None},
-        )
-    if command in {"references"}:
-        return run_position_command(
-            "references",
-            "references",
-            args,
-            lambda c, f, t, p: c.references(f, p["line"], p["character"], args.include_declaration),
-        )
-    if command in {"rename"}:
-        if not str(args.new_name).strip():
-            return emit_validation_failure("rename", str(args.file or ""), None, ValidationError("--new-name is required"), args.format)
-        return run_position_command(
-            "rename",
-            "rename",
-            args,
-            lambda c, f, t, p: c.rename(f, p["line"], p["character"], args.new_name),
-        )
-    if command in {"signature-help", "signature-helper"}:
-        return run_position_command(
-            "signature-help",
-            "signature-help",
-            args,
-            lambda c, f, t, p: c.signature_help(f, p["line"], p["character"]),
-        )
-    if command in {"type-definition"}:
-        return run_position_command(
-            "type-definition",
-            "type-definition",
-            args,
-            lambda c, f, t, p: c.type_definition(f, p["line"], p["character"]),
-        )
-
-    raise ValidationError(f"unknown command {command!r}")
+        return 1 if int(result.get("errorCount", 0)) > 0 else 0
+    except Exception as err:
+        return emit_runtime_failure(capability, err, fmt)
+    finally:
+        client.close()
 
 
 def main(argv: list[str] | None = None) -> int:
