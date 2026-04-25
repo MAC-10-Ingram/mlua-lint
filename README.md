@@ -8,6 +8,15 @@ diagnostic only
 python -m pip install -e .
 ```
 
+## Run without install
+
+From the repository root:
+
+```bash
+PYTHONPATH=src python -m mlua_lint path/to/script.mlua
+PYTHONPATH=src python -m mlua_lint path/to/a.mlua path/to/b.mlua --severity warning,error
+```
+
 ## Usage
 
 ```bash
